@@ -39,12 +39,17 @@ jobs:
             mv arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu arm-gnu-toolchain
           fi
 
-      - name: Apply KernelSU Next
-        run: |
-          git clone https://github.com/KernelSU-Next/KernelSU-Next.git kernelsu-next
-          cd kernelsu-next
-          ./scripts/patch.sh $GITHUB_WORKSPACE
-          cd $GITHUB_WORKSPACE
+      - name: Apply KernelSU-Next
+      run: |
+        # Clone KernelSU-Next
+        git clone https://github.com/KernelSU-Next/KernelSU-Next.git kernelsu-next
+
+        # Copy driver KernelSU vào source kernel
+        cp -r kernelsu-next/kernel/drivers/kernelsu $GITHUB_WORKSPACE/drivers/
+
+        # Patch Kconfig và Makefile để include KernelSU
+        echo 'obj-$(CONFIG_KSU) += kernelsu/' >> $GITHUB_WORKSPACE/drivers/Makefile
+        echo 'source "drivers/kernelsu/Kconfig"' >> $GITHUB_WORKSPACE/drivers/Kconfig
 
       - name: Apply SUSFS patch
         run: |
