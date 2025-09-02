@@ -1,24 +1,82 @@
-name: Build Kernel
+name: Build Kernel (A06 5G + KernelSU Next + SUSFS)
 
 on:
-  workflow_dispatch:   # Cho phép bấm nút chạy tay
-  push:                # Tự chạy khi push code mới
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout source
-      uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
 
-    - name: Set up dependencies
-      run: sudo apt update && sudo apt install -y \
-        git curl wget unzip bc bison build-essential flex \
-        gcc g++ clang lld llvm make cpio python3 python3-pip \
-        libssl-dev libelf-dev libncurses-dev zstd
+      - name: Set up dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget unzip bc bison build-essential flex \
+            gcc g++ clang lld llvm make cpio python3 python3-pip \
+            libssl-dev libelf-dev libncurses-dev zstd
 
-    - name: Run build script
-      run: bash build_kernel.sh
+      - name: Clone toolchains
+        run: |
+          mkdir -p $HOME/toolchains
+          cd $HOME/toolchains
+
+          # Clang r450784e
+          if [ ! -d "clang-r450784e" ]; then
+            mkdir clang-r450784e && cd clang-r450784e
+            curl -LO "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/722c840a8e4d58b5ebdab62ce78eacdafd301208/clang-r450784e.tar.gz"
+            tar -xf clang-r450784e.tar.gz && rm clang-r450784e.tar.gz
+            cd ..
+          fi
+
+          # ARM GNU toolchain
+          if [ ! -d "arm-gnu-toolchain" ]; then
+            curl -LO "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
+            tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+            mv arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu arm-gnu-toolchain
+          fi
+
+      - name: Apply KernelSU Next
+        run: |
+          git clone https://github.com/KernelSU-Next/KernelSU-Next.git kernelsu-next
+          cd kernelsu-next
+          ./scripts/patch.sh $GITHUB_WORKSPACE
+          cd $GITHUB_WORKSPACE
+
+      - name: Apply SUSFS patch
+        run: |
+          git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          cd susfs4ksu
+          ./patch.sh $GITHUB_WORKSPACE
+          cd $GITHUB_WORKSPACE
+
+      - name: Build kernel
+        run: |
+          export PATH=$HOME/toolchains/clang-r450784e/bin:$PATH
+          export PATH=$HOME/toolchains/arm-gnu-toolchain/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="huyzilo77-bot"
+
+          make O=out a06x_00_defconfig
+          make -j$(nproc) O=out CC=clang ARCH=arm64 \
+            CROSS_COMPILE=aarch64-none-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu-
+
+          cp out/arch/arm64/boot/Image ./Image
+
+      - name: Pack AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          zip -r9 Kernel-A06-SUSFS.zip *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-A06-SUSFS
+          path: AnyKernel3/Kernel-A06-SUSFS.zip
