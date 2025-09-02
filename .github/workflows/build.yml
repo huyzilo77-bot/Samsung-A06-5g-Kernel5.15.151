@@ -1,61 +1,80 @@
-name: Build Samsung A06B Kernel (KernelSU Next + SUSFS with AnyKernel3)
+name: Build Kernel Samsung A06B
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Cho phép chạy thủ công
+  push:
+    branches:
+      - main           # Tự động build khi push code lên nhánh main
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v3
+      # Checkout code
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y git wget curl bc bison build-essential flex \
-          libssl-dev libncurses5-dev xz-utils zip unzip cpio python3 \
-          liblz4-tool
+      # Setup dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git device-tree-compiler lz4 xz-utils zlib1g-dev \
+            openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full \
+            android-sdk-libsparse-utils erofs-utils \
+            flex bison gperf build-essential zip curl bc \
+            libc6-dev libncurses-dev libx11-dev libreadline-dev libgl1 \
+            libgl1-mesa-dev libxml2-utils xsltproc cpio kmod openssl \
+            libelf-dev pahole libssl-dev libarchive-tools zstd
 
-    - name: Download Clang and ARM GNU toolchains
-      run: |
-        mkdir -p $HOME/toolchains
-        wget -O clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz
-        mkdir -p $HOME/toolchains/clang && tar -xzf clang.tar.gz -C $HOME/toolchains/clang
-        wget -O gcc.tar.xz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-        mkdir -p $HOME/toolchains/gcc && tar -xJf gcc.tar.xz -C $HOME/toolchains/gcc
-        echo "$HOME/toolchains/clang/bin" >> $GITHUB_PATH
-        echo "$HOME/toolchains/gcc/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
+      # Download toolchains
+      - name: Setup toolchains
+        run: |
+          mkdir -p $HOME/toolchains
+          cd $HOME/toolchains
 
-    - name: Apply KernelSU Next + SUSFS patches
-      run: |
-        git clone https://github.com/KernelSU-Next/KernelSU-Next.git ksu-next
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
-        cp -r ksu-next/* drivers/kernelsu/ || true
-        cp -r susfs/kernel-5.15/kernel_patches/* . || true
+          # Clang r450784e
+          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/722c840a8e4d58b5ebdab62ce78eacdafd301208/clang-r450784e.tar.gz
+          mkdir clang-r450784e && tar -xf clang-r450784e.tar.gz -C clang-r450784e
+          rm clang-r450784e.tar.gz
 
-    - name: Build kernel
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CC=clang
-        export CROSS_COMPILE=aarch64-none-linux-gnu-
-        make a06x_00_defconfig
-        make -j$(nproc) Image.gz
+          # ARM GNU toolchain 14.2
+          curl -LO https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          mv arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu gcc
+          rm arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
 
-    - name: Package with AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
-        cp arch/arm64/boot/Image* AnyKernel3/ || true
-        cp arch/arm64/boot/dts/*.dtb AnyKernel3/ || true
-        cp arch/arm64/boot/dts/*.dtbo AnyKernel3/ || true
-        # Tuỳ chỉnh anykernel.sh nếu muốn (ví dụ tên kernel)
-        cd AnyKernel3
-        zip -r9 Kernel-A06B-KSU-SUSFS.zip *
+      # Export env
+      - name: Setup env
+        run: |
+          echo "PATH=$PATH:$HOME/toolchains/clang-r450784e/bin" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/toolchains/clang-r450784e/lib64" >> $GITHUB_ENV
+          echo "BUILD_CROSS_COMPILE=$HOME/toolchains/gcc/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
+          echo "BUILD_CC=$HOME/toolchains/clang-r450784e/bin/clang" >> $GITHUB_ENV
 
-    - name: Upload the flashable kernel zip
-      uses: actions/upload-artifact@v3
-      with:
-        name: Kernel-A06B-KSU-SUSFS
-        path: AnyKernel3/Kernel-A06B-KSU-SUSFS.zip
+      # Build Kernel
+      - name: Build kernel
+        run: |
+          mkdir -p out
+          make O=out ARCH=arm64 a06x_00_defconfig
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC=$BUILD_CC \
+            CROSS_COMPILE=$BUILD_CROSS_COMPILE \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1
+
+      # Pack AnyKernel3
+      - name: Pack AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel
+          cp out/arch/arm64/boot/Image* AnyKernel/
+          cp out/arch/arm64/boot/dtb* AnyKernel/ || true
+          cp out/arch/arm64/boot/dtbo* AnyKernel/ || true
+          cd AnyKernel && zip -r9 ../Kernel-A06B.zip *
+
+      # Upload artifact
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Samsung-A06B-Kernel
+          path: Kernel-A06B.zip
