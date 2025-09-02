@@ -1,4 +1,4 @@
-name: Build Kernel
+name: Build Kernel with SUSFS (gki-android13-5.15)
 
 on:
   workflow_dispatch:
@@ -9,73 +9,66 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     strategy:
       matrix:
         defconfig: [a06x_00_defconfig, a06x_0_defconfig]
 
     steps:
-    - name: Checkout kernel source
+    - name: Checkout source
       uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
-        sudo apt update && sudo apt install -y \
-        git device-tree-compiler lz4 xz-utils zlib1g-dev openjdk-17-jdk \
-        gcc g++ python3 python-is-python3 p7zip-full android-sdk-libsparse-utils erofs-utils \
-        default-jdk git gnupg flex bison gperf build-essential zip curl libc6-dev \
-        libncurses-dev libx11-dev libreadline-dev libgl1 libgl1-mesa-dev \
-        python3 make bc grep tofrodos python3-markdown libxml2-utils xsltproc \
-        cpio kmod openssl libelf-dev pahole libssl-dev libarchive-tools zstd
+        sudo apt update
+        sudo apt install -y git lz4 xz-utils build-essential bc flex bison \
+          libssl-dev libncurses-dev zstd cpio python3
 
-    - name: Setup clang
+    - name: Setup toolchains
       run: |
         mkdir -p $HOME/toolchains
         cd $HOME/toolchains
-        curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/722c840a8e4d58b5ebdab62ce78eacdafd301208/clang-r450784e.tar.gz
-        mkdir clang-r450784e && tar -xf clang-r450784e.tar.gz -C clang-r450784e
-        echo "$HOME/toolchains/clang-r450784e/bin" >> $GITHUB_PATH
+        curl -LO https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz
+        mkdir clang && tar -xzf clang-r450784e.tar.gz -C clang
+        curl -LO https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+        mkdir gcc && tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C gcc
 
-    - name: Setup ARM GNU Toolchain
+    - name: Set env
       run: |
-        cd $HOME/toolchains
-        curl -LO https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-        tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-        echo "$HOME/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
+        echo "PATH=$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH" >> $GITHUB_ENV
+        echo "CC=clang" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-none-linux-gnu-" >> $GITHUB_ENV
+        echo "ARCH=arm64" >> $GITHUB_ENV
 
-    - name: Apply KernelSU Next + SUSFS patch
+    - name: Apply SUSFS patches (gki-android13-5.15)
+      run: |
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.15
+        cp susfs4ksu/kernel_patches/fs/* fs/
+        cp susfs4ksu/kernel_patches/include/linux/* include/linux/
+        cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch .
+        patch -p1 < 50_add_susfs_in_gki-android13-5.15.patch
+
+    - name: Apply KernelSU-Next
       run: |
         git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
-        cd KernelSU-Next
-        ./setup.sh ../   # patch KernelSU vào source chính
-        cd ..
-        cp -r susfs/kernel_patches/* .  # copy patch của SUSFS
+        cp -r KernelSU-Next/kernel/* .
 
-    - name: Build Kernel (${{ matrix.defconfig }})
+    - name: Build (${{ matrix.defconfig }})
       run: |
-        export ARCH=arm64
-        export PATH=$HOME/toolchains/clang-r450784e/bin:$PATH
-        export CROSS_COMPILE=$HOME/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
-        export CC=clang
         mkdir -p out
         make O=out ${{ matrix.defconfig }}
-        make -j$(nproc) O=out \
-          ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-          CROSS_COMPILE=$CROSS_COMPILE \
-          CC=$CC \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          V=1 \
-          Image
+        make -j$(nproc) O=out IMAGE \
+          CC=$CC CROSS_COMPILE=$CROSS_COMPILE LLVM=1 LLVM_IAS=1 V=1
 
-    - name: Pack with AnyKernel3
+    - name: Package AnyKernel3
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
         cp out/arch/arm64/boot/Image AnyKernel3/
         cd AnyKernel3
-        zip -r9 Kernel-${{ matrix.defconfig }}.zip *
+        zip -r9 ../Kernel-${{ matrix.defconfig }}.zip *
 
-    - name: Upload artifact
+    - name: Upload build
       uses: actions/upload-artifact@v4
       with:
-        name: Kernel-${{ matrix.defconfig }}
-        path: AnyKernel3/*.zip
+        name: Kernel-SUSFS-${{ matrix.defconfig }}
+        path: Kernel-${{ matrix.defconfig }}.zip
