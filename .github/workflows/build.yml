@@ -1,80 +1,81 @@
-name: Build Kernel Samsung A06B
+name: Build Kernel
 
 on:
-  workflow_dispatch:   # Cho phép chạy thủ công
+  workflow_dispatch:
   push:
     branches:
-      - main           # Tự động build khi push code lên nhánh main
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        defconfig: [a06x_00_defconfig, a06x_0_defconfig]
 
     steps:
-      # Checkout code
-      - name: Checkout source
-        uses: actions/checkout@v4
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
 
-      # Setup dependencies
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y git device-tree-compiler lz4 xz-utils zlib1g-dev \
-            openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full \
-            android-sdk-libsparse-utils erofs-utils \
-            flex bison gperf build-essential zip curl bc \
-            libc6-dev libncurses-dev libx11-dev libreadline-dev libgl1 \
-            libgl1-mesa-dev libxml2-utils xsltproc cpio kmod openssl \
-            libelf-dev pahole libssl-dev libarchive-tools zstd
+    - name: Install dependencies
+      run: |
+        sudo apt update && sudo apt install -y \
+        git device-tree-compiler lz4 xz-utils zlib1g-dev openjdk-17-jdk \
+        gcc g++ python3 python-is-python3 p7zip-full android-sdk-libsparse-utils erofs-utils \
+        default-jdk git gnupg flex bison gperf build-essential zip curl libc6-dev \
+        libncurses-dev libx11-dev libreadline-dev libgl1 libgl1-mesa-dev \
+        python3 make bc grep tofrodos python3-markdown libxml2-utils xsltproc \
+        cpio kmod openssl libelf-dev pahole libssl-dev libarchive-tools zstd
 
-      # Download toolchains
-      - name: Setup toolchains
-        run: |
-          mkdir -p $HOME/toolchains
-          cd $HOME/toolchains
+    - name: Setup clang
+      run: |
+        mkdir -p $HOME/toolchains
+        cd $HOME/toolchains
+        curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/722c840a8e4d58b5ebdab62ce78eacdafd301208/clang-r450784e.tar.gz
+        mkdir clang-r450784e && tar -xf clang-r450784e.tar.gz -C clang-r450784e
+        echo "$HOME/toolchains/clang-r450784e/bin" >> $GITHUB_PATH
 
-          # Clang r450784e
-          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/722c840a8e4d58b5ebdab62ce78eacdafd301208/clang-r450784e.tar.gz
-          mkdir clang-r450784e && tar -xf clang-r450784e.tar.gz -C clang-r450784e
-          rm clang-r450784e.tar.gz
+    - name: Setup ARM GNU Toolchain
+      run: |
+        cd $HOME/toolchains
+        curl -LO https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+        tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+        echo "$HOME/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
 
-          # ARM GNU toolchain 14.2
-          curl -LO https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          mv arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu gcc
-          rm arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+    - name: Apply KernelSU Next + SUSFS patch
+      run: |
+        git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs
+        cd KernelSU-Next
+        ./setup.sh ../   # patch KernelSU vào source chính
+        cd ..
+        cp -r susfs/kernel_patches/* .  # copy patch của SUSFS
 
-      # Export env
-      - name: Setup env
-        run: |
-          echo "PATH=$PATH:$HOME/toolchains/clang-r450784e/bin" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/toolchains/clang-r450784e/lib64" >> $GITHUB_ENV
-          echo "BUILD_CROSS_COMPILE=$HOME/toolchains/gcc/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
-          echo "BUILD_CC=$HOME/toolchains/clang-r450784e/bin/clang" >> $GITHUB_ENV
+    - name: Build Kernel (${{ matrix.defconfig }})
+      run: |
+        export ARCH=arm64
+        export PATH=$HOME/toolchains/clang-r450784e/bin:$PATH
+        export CROSS_COMPILE=$HOME/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
+        export CC=clang
+        mkdir -p out
+        make O=out ${{ matrix.defconfig }}
+        make -j$(nproc) O=out \
+          ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+          CROSS_COMPILE=$CROSS_COMPILE \
+          CC=$CC \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          V=1 \
+          Image
 
-      # Build Kernel
-      - name: Build kernel
-        run: |
-          mkdir -p out
-          make O=out ARCH=arm64 a06x_00_defconfig
-          make -j$(nproc) O=out ARCH=arm64 \
-            CC=$BUILD_CC \
-            CROSS_COMPILE=$BUILD_CROSS_COMPILE \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1
+    - name: Pack with AnyKernel3
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+        cp out/arch/arm64/boot/Image AnyKernel3/
+        cd AnyKernel3
+        zip -r9 Kernel-${{ matrix.defconfig }}.zip *
 
-      # Pack AnyKernel3
-      - name: Pack AnyKernel3
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel
-          cp out/arch/arm64/boot/Image* AnyKernel/
-          cp out/arch/arm64/boot/dtb* AnyKernel/ || true
-          cp out/arch/arm64/boot/dtbo* AnyKernel/ || true
-          cd AnyKernel && zip -r9 ../Kernel-A06B.zip *
-
-      # Upload artifact
-      - name: Upload Kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: Samsung-A06B-Kernel
-          path: Kernel-A06B.zip
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-${{ matrix.defconfig }}
+        path: AnyKernel3/*.zip
