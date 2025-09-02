@@ -1,8 +1,8 @@
-name: Build Kernel with SUSFS (gki-android13-5.15)
+name: Build Kernel
 
 on:
-  workflow_dispatch:
-  push:
+  workflow_dispatch:   # Cho phép bấm nút chạy tay
+  push:                # Tự chạy khi push code mới
     branches:
       - main
 
@@ -10,65 +10,15 @@ jobs:
   build:
     runs-on: ubuntu-22.04
 
-    strategy:
-      matrix:
-        defconfig: [a06x_00_defconfig, a06x_0_defconfig]
-
     steps:
     - name: Checkout source
       uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y git lz4 xz-utils build-essential bc flex bison \
-          libssl-dev libncurses-dev zstd cpio python3
+    - name: Set up dependencies
+      run: sudo apt update && sudo apt install -y \
+        git curl wget unzip bc bison build-essential flex \
+        gcc g++ clang lld llvm make cpio python3 python3-pip \
+        libssl-dev libelf-dev libncurses-dev zstd
 
-    - name: Setup toolchains
-      run: |
-        mkdir -p $HOME/toolchains
-        cd $HOME/toolchains
-        curl -LO https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz
-        mkdir clang && tar -xzf clang-r450784e.tar.gz -C clang
-        curl -LO https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-        mkdir gcc && tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C gcc
-
-    - name: Set env
-      run: |
-        echo "PATH=$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH" >> $GITHUB_ENV
-        echo "CC=clang" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=aarch64-none-linux-gnu-" >> $GITHUB_ENV
-        echo "ARCH=arm64" >> $GITHUB_ENV
-
-    - name: Apply SUSFS patches (gki-android13-5.15)
-      run: |
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.15
-        cp susfs4ksu/kernel_patches/fs/* fs/
-        cp susfs4ksu/kernel_patches/include/linux/* include/linux/
-        cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch .
-        patch -p1 < 50_add_susfs_in_gki-android13-5.15.patch
-
-    - name: Apply KernelSU-Next
-      run: |
-        git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
-        cp -r KernelSU-Next/kernel/* .
-
-    - name: Build (${{ matrix.defconfig }})
-      run: |
-        mkdir -p out
-        make O=out ${{ matrix.defconfig }}
-        make -j$(nproc) O=out IMAGE \
-          CC=$CC CROSS_COMPILE=$CROSS_COMPILE LLVM=1 LLVM_IAS=1 V=1
-
-    - name: Package AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-        cp out/arch/arm64/boot/Image AnyKernel3/
-        cd AnyKernel3
-        zip -r9 ../Kernel-${{ matrix.defconfig }}.zip *
-
-    - name: Upload build
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-SUSFS-${{ matrix.defconfig }}
-        path: Kernel-${{ matrix.defconfig }}.zip
+    - name: Run build script
+      run: bash build_kernel.sh
